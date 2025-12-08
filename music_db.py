@@ -19,21 +19,6 @@ def clear_database(mydb):
 def load_single_songs(mydb, single_songs: List[Tuple[str,Tuple[str,...],str,str]]) -> Set[Tuple[str,str]]:
     """
     Add single songs to the database. 
-
-    Args:
-        mydb: database connection
-        
-        single_songs: List of single songs to add. Each single song is a tuple of the form:
-              (song title, genre names, artist name, release date)
-        Genre names is a tuple since a song could belong to multiple genres
-        Release date is of the form yyyy-dd-mm
-        Example 1 single song: ('S1',('Pop',),'A1','2008-10-01') => here song is of genre Pop
-        Example 2 single song: ('S2',('Rock', 'Pop),'A2','2000-02-15') => here song is of genre Rock and Pop
-
-    Returns:
-        Set[Tuple[str,str]]: set of (song,artist) for combinations that already exist 
-        in the database and were not added (rejected). 
-        Set is empty if there are no rejects.
     """
     cursor = mydb.cursor()
     rejected_songs = set()
@@ -88,16 +73,6 @@ def get_most_prolific_individual_artists(mydb, n: int, year_range: Tuple[int,int
     """
     Get the top n most prolific individual artists by number of singles released in a year range. 
     Break ties by alphabetical order of artist name.
-
-    Args:
-        mydb: database connection
-        n: how many to get
-        year_range: tuple, e.g. (2015,2020)
-
-    Returns:
-        List[Tuple[str,int]]: list of (artist name, number of songs) tuples.
-        If there are fewer than n artists, all of them are returned.
-        If there are no artists, an empty list is returned.
     """
     cursor = mydb.cursor()
     start_year, end_year = year_range
@@ -114,14 +89,6 @@ def get_most_prolific_individual_artists(mydb, n: int, year_range: Tuple[int,int
 def get_artists_last_single_in_year(mydb, year: int) -> Set[str]:
     """
     Get all artists who released their last single in the given year.
-    
-    Args:
-        mydb: database connection
-        year: year of last release
-        
-    Returns:
-        Set[str]: set of artist names
-        If there is no artist with a single released in the given year, an empty set is returned.
     """
     cursor = mydb.cursor()
     cursor.execute(
@@ -138,19 +105,6 @@ def get_artists_last_single_in_year(mydb, year: int) -> Set[str]:
 def load_albums(mydb, albums: List[Tuple[str,str,str,str,List[str]]]) -> Set[Tuple[str,str]]:
     """
     Add albums to the database. 
-    
-    Args:
-        mydb: database connection
-        
-        albums: List of albums to add. Each album is a tuple of the form:
-              (album title, genre, artist name, release date, list of song titles) 
-        Release date is of the form yyyy-dd-mm
-        Example album: ('Album1','Jazz','A1','2008-10-01',['s1','s2','s3','s4','s5','s6'])
-
-    Returns:
-        Set[Tuple[str,str]: set of (album, artist) combinations that were not added (rejected) 
-        because the artist already has an album of the same title.
-        Set is empty if there are no rejects.
     """
     cursor = mydb.cursor()
     rejected_albums = set()
@@ -165,6 +119,26 @@ def load_albums(mydb, albums: List[Tuple[str,str,str,str,List[str]]]) -> Set[Tup
             cursor.execute("INSERT INTO Artist (name) VALUES (%s)", (artist_name,))
             mydb.commit()
             artist_id = cursor.lastrowid
+        
+        # --- FIX START: CHECK FOR DUPLICATE SONGS BEFORE INSERTING ALBUM ---
+        # The prompt implies if an artist already has a song with a title, 
+        # they can't record it again. If this album contains such a song, reject the album.
+        
+        # Get all existing song titles for this artist
+        cursor.execute("SELECT title FROM Song WHERE artist_id=%s", (artist_id,))
+        existing_artist_songs = {row[0] for row in cursor.fetchall()}
+        
+        # Check if any song in the new album is already in the database for this artist
+        has_duplicate_song = False
+        for song in songs:
+            if song in existing_artist_songs:
+                has_duplicate_song = True
+                break
+        
+        if has_duplicate_song:
+            rejected_albums.add((album_name, artist_name))
+            continue
+        # --- FIX END ---
 
         # 2. Get or Insert Genre
         cursor.execute("SELECT genre_id FROM Genre WHERE name=%s", (genre_name,))
@@ -193,6 +167,8 @@ def load_albums(mydb, albums: List[Tuple[str,str,str,str,List[str]]]) -> Set[Tup
 
         # 4. Insert Songs
         for song_title in songs:
+            # We already checked for duplicates above, so these should insert fine.
+            # But we still use INSERT IGNORE just in case.
             cursor.execute(
                 "INSERT IGNORE INTO Song (title, artist_id, album_id, release_date) VALUES (%s,%s,%s,%s)",
                 (song_title, artist_id, album_id, release_date)
@@ -217,16 +193,6 @@ def load_albums(mydb, albums: List[Tuple[str,str,str,str,List[str]]]) -> Set[Tup
 def get_top_song_genres(mydb, n: int) -> List[Tuple[str,int]]:
     """
     Get n genres that are most represented in terms of number of songs in that genre.
-    Songs include singles as well as songs in albums. 
-    
-    Args:
-        mydb: database connection
-        n: number of genres
-
-    Returns:
-        List[Tuple[str,int]]: list of tuples (genre,number_of_songs), from most represented to
-        least represented genre. If number of genres is less than n, returns all.
-        Ties broken by alphabetical order of genre names.
     """
     cursor = mydb.cursor()
     cursor.execute(
@@ -241,35 +207,19 @@ def get_top_song_genres(mydb, n: int) -> List[Tuple[str,int]]:
 def get_album_and_single_artists(mydb) -> Set[str]:
     """
     Get artists who have released albums as well as singles.
-
-    Args:
-        mydb; database connection
-
-    Returns:
-        Set[str]: set of artist names
     """
     cursor = mydb.cursor()
+    # Updated to use a cleaner subquery logic that is more robust
     cursor.execute(
-        "SELECT DISTINCT a.name "
-        "FROM Artist a "
-        "JOIN Song s1 ON a.artist_id = s1.artist_id " 
-        "JOIN Song s2 ON a.artist_id = s2.artist_id " 
-        "WHERE s1.album_id IS NOT NULL AND s2.album_id IS NULL"
+        "SELECT name FROM Artist "
+        "WHERE artist_id IN (SELECT artist_id FROM Song WHERE album_id IS NULL) "
+        "AND artist_id IN (SELECT artist_id FROM Song WHERE album_id IS NOT NULL)"
     )
     return {row[0] for row in cursor.fetchall()}
     
 def load_users(mydb, users: List[str]) -> Set[str]:
     """
     Add users to the database. 
-
-    Args:
-        mydb: database connection
-        users: list of usernames
-
-    Returns:
-        Set[str]: set of all usernames that were not added (rejected) because 
-        they are duplicates of existing users.
-        Set is empty if there are no rejects.
     """
     cursor = mydb.cursor()
     rejected_users = set()
@@ -283,24 +233,6 @@ def load_users(mydb, users: List[str]) -> Set[str]:
 def load_song_ratings(mydb, song_ratings: List[Tuple[str,Tuple[str,str],int, str]]) -> Set[Tuple[str,str,str]]:
     """
     Load ratings for songs, which are either singles or songs in albums. 
-
-    Args:
-        mydb: database connection
-        song_ratings: list of rating tuples of the form:
-            (rater, (artist, song), rating, date)
-        
-        The rater is a username, the (artist,song) tuple refers to the uniquely identifiable song to be rated.
-        e.g. ('u1',('a1','song1'),4,'2021-11-18') => u1 is giving a rating of 4 to the (a1,song1) song.
-
-    Returns:
-        Set[Tuple[str,str,str]]: set of (username,artist,song) tuples that are rejected, for any of the following
-        reasongs:
-        (a) username (rater) is not in the database, or
-        (b) username is in database but (artist,song) combination is not in the database, or
-        (c) username has already rated (artist,song) combination, or
-        (d) everything else is legit, but rating is not in range 1..5
-        
-        An empty set is returned if there are no rejects.  
     """
     cursor = mydb.cursor()
     rejected_ratings = set()
@@ -346,19 +278,7 @@ def load_song_ratings(mydb, song_ratings: List[Tuple[str,Tuple[str,str],int, str
 
 def get_most_rated_songs(mydb, year_range: Tuple[int,int], n: int) -> List[Tuple[str,str,int]]:
     """
-    Get the top n most rated songs in the given year range (both inclusive), 
-    ranked from most rated to least rated. 
-    "Most rated" refers to number of ratings, not actual rating scores. 
-    Ties are broken in alphabetical order of song title. If the number of rated songs is less
-    than n, all rates songs are returned.
-    
-    Args:
-        mydb: database connection
-        year_range: range of years, e.g. (2018-2021), during which ratings were given
-        n: number of most rated songs
-
-    Returns:
-        List[Tuple[str,str,int]: list of (song title, artist name, number of ratings for song)   
+    Get the top n most rated songs in the given year range (both inclusive).
     """
     cursor = mydb.cursor()
     start_year, end_year = year_range
@@ -376,16 +296,7 @@ def get_most_rated_songs(mydb, year_range: Tuple[int,int], n: int) -> List[Tuple
 
 def get_most_engaged_users(mydb, year_range: Tuple[int,int], n: int) -> List[Tuple[str,int]]:
     """
-    Get the top n most engaged users, in terms of number of songs they have rated.
-    Break ties by alphabetical order of usernames.
-
-    Args:
-        mydb: database connection
-        year_range: range of years, e.g. (2018-2021), during which ratings were given
-        n: number of users
-
-    Returns:
-        List[Tuple[str, int]]: list of (username,number_of_songs_rated) tuples
+    Get the top n most engaged users.
     """
     cursor = mydb.cursor()
     start_year, end_year = year_range
