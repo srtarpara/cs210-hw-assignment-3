@@ -6,12 +6,12 @@ from typing import List, Tuple, Set
 # ------------------------------
 # If you want to run this file standalone, you can create a connection like this:
 # Otherwise, `mydb` can be passed into the functions externally.
-mydb = connect(
-    host="localhost",
-    user="root",
-    password="password",
-    database="music_db"
-)
+#mydb = connect(
+#    host="localhost",
+#    user="root",
+#    password="",
+#    database="music_db"
+#)
 
 
 # ------------------------------
